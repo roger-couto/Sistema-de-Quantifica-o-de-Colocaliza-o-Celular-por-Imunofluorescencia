@@ -80,6 +80,22 @@
       color: var(--ink-soft);
       margin: -8px 0 16px;
     }
+    .param label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--ink-soft);
+      margin-bottom: 6px;
+    }
+    .param label .val {
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .param input[type="range"] {
+      width: 100%;
+      accent-color: var(--blue);
+    }
     .uploads {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -304,12 +320,12 @@
 <div class="wrap">
   <header>
     <h1>Analisador de Colocalização Celular</h1>
-    <p>Envie apenas os canais que deseja quantificar.</p>
+    <p>Estimativa experimental de núcleos e sinais fluorescentes. As imagens são processadas no seu navegador.</p>
   </header>
 
   <div class="step">
     <h2><span class="n">1</span> Carregar imagens do campo</h2>
-    <div class="step-note">Envie apenas o(s) canal(is) que quiser quantificar. <br> Com só o azul, conta núcleos. <br> Com azul + verde, conta os dois separadamente. <br> Calcula a sobreposição (colocalização) a partir da terceira imagem (Merge).</div>
+    <div class="step-note">Envie apenas o(s) canal(is) que quiser quantificar. <br> Com só o azul, estima núcleos. <br> Com azul + verde, estima cada canal separadamente. <br> Para colocalização, use um Merge do mesmo campo, com os canais alinhados.</div>
     <div class="uploads">
       <div class="up blue" id="upBlue">
         <div class="label">Canal Azul (núcleos)</div>
@@ -346,7 +362,16 @@
   </div>
 
   <div class="step">
-    <h2><span class="n">3</span> Execução</h2>
+    <h2><span class="n">3</span> Sensibilidade</h2>
+    <p class="step-note">Ajuste depois de ver os círculos: mais sensível marca mais pontos e pode incluir ruído; menos sensível marca só sinais mais fortes.</p>
+    <div class="param">
+      <label for="sensitivity"><span>Mais marcações</span><span class="val" id="sensitivityValue">Padrão</span><span>Menos marcações</span></label>
+      <input id="sensitivity" type="range" min="0.35" max="1.40" step="0.05" value="0.55">
+    </div>
+  </div>
+
+  <div class="step">
+    <h2><span class="n">4</span> Execução</h2>
     <div class="actions">
       <button id="btnAnalyze" disabled>Analisar Imagens</button>
       <button class="secondary" id="btnAddRow" disabled>Registrar na Tabela</button>
@@ -355,23 +380,24 @@
   </div>
 
   <div class="step" id="resultsStep" style="display:none">
-    <h2><span class="n">4</span> Resultados por Canal</h2>
+    <h2><span class="n">5</span> Resultados por Canal</h2>
     <div class="summary-text" id="summaryText"></div>
+    <p class="step-note">Estimativa automática: confira as marcações sobre a imagem. Ajuste a sensibilidade e analise novamente se necessário.</p>
     <div class="results-grid">
-      <div class="metric blue" id="metricBlue"><div class="num" id="rTotalBlue">–</div><div class="lab">Total de células (imagem azul)</div></div>
-      <div class="metric green" id="metricGreen"><div class="num" id="rTotalGreen">–</div><div class="lab">Regiões verdes (imagem verde)</div></div>
-      <div class="metric rust" id="metricDouble"><div class="num" id="rDouble">–</div><div class="lab">Células duplo-positivas</div></div>
-      <div class="metric" id="metricPercent"><div class="num" id="rPercent">–</div><div class="lab">% colocalização</div></div>
-      <div class="metric" id="metricRatio"><div class="num" id="rRatio">–</div><div class="lab">Razão Azul/Verde (merge)</div></div>
+      <div class="metric blue" id="metricBlue"><div class="num" id="rTotalBlue">–</div><div class="lab">Núcleos estimados (imagem azul)</div></div>
+      <div class="metric green" id="metricGreen"><div class="num" id="rTotalGreen">–</div><div class="lab">Sinais verdes estimados</div></div>
+      <div class="metric rust" id="metricDouble"><div class="num" id="rDouble">–</div><div class="lab">Duplo-positivas estimadas</div></div>
+      <div class="metric" id="metricPercent"><div class="num" id="rPercent">–</div><div class="lab">% colocalização estimada</div></div>
+      <div class="metric" id="metricRatio"><div class="num" id="rRatio">–</div><div class="lab">Razão de intensidade (estim.)</div></div>
     </div>
     <div id="overlaysContainer"></div>
   </div>
 
   <div class="step" id="tableStep" style="display:none">
-    <h2><span class="n">5</span> Tabela Consolidada</h2>
+    <h2><span class="n">6</span> Tabela Consolidada</h2>
     <table id="resultsTable">
       <thead>
-        <tr><th>Campo</th><th>Céls. Azul</th><th>Regiões Verde</th><th>Duplo-Positivas</th><th>% Coloc.</th><th>Razão Az/Verde</th></tr>
+        <tr><th>Campo</th><th>Núcleos Azul</th><th>Sinais Verde</th><th>Duplo-positivas</th><th>% coloc.</th><th>Razão intens.</th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -385,10 +411,11 @@
 
 <script>
   const CALIBRATION = {
-    bluePeakRadius: 5,
-    greenPeakRadius: 7,
-    colocRadius: 6,
-    contrastRatio: 1.18
+    bluePeakRadius: 9,
+    greenPeakRadius: 40,
+    colocRadius: 9,
+    backgroundRadiusFraction: 0.012,
+    minimumSignal: 4
   };
 
   const state = { blue: null, green: null, merge: null };
@@ -537,65 +564,187 @@
     return ch;
   }
 
-  function blurChannel(src, w, h) {
-    const dst = new Float32Array(w * h);
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        let sum = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            sum += src[(y + dy) * w + (x + dx)];
-          }
+  function boxBlurChannel(src, width, height, radius) {
+    const horizontal = new Float32Array(width * height);
+    const result = new Float32Array(width * height);
+
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      let sum = 0;
+      let count = 0;
+      for (let x = 0; x <= Math.min(radius, width - 1); x++) {
+        sum += src[row + x];
+        count++;
+      }
+      for (let x = 0; x < width; x++) {
+        horizontal[row + x] = sum / count;
+        const removeX = x - radius;
+        const addX = x + radius + 1;
+        if (removeX >= 0) {
+          sum -= src[row + removeX];
+          count--;
         }
-        dst[y * w + x] = sum / 9;
+        if (addX < width) {
+          sum += src[row + addX];
+          count++;
+        }
+      }
+    }
+
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let count = 0;
+      for (let y = 0; y <= Math.min(radius, height - 1); y++) {
+        sum += horizontal[y * width + x];
+        count++;
+      }
+      for (let y = 0; y < height; y++) {
+        result[y * width + x] = sum / count;
+        const removeY = y - radius;
+        const addY = y + radius + 1;
+        if (removeY >= 0) {
+          sum -= horizontal[removeY * width + x];
+          count--;
+        }
+        if (addY < height) {
+          sum += horizontal[addY * width + x];
+          count++;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  function blurChannel(src, width, height) {
+    const dst = new Float32Array(width * height);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = y * width + x;
+        dst[i] = (
+          src[i - width - 1] + src[i - width] + src[i - width + 1] +
+          src[i - 1] + src[i] + src[i + 1] +
+          src[i + width - 1] + src[i + width] + src[i + width + 1]
+        ) / 9;
       }
     }
     return dst;
   }
 
-  function findPeaksAdaptive(channel, width, height, radius) {
-    const peaks = [];
-    const r = radius;
-    const cutoffX = width * 0.88;
-    const cutoffY = height * 0.90;
+  function prepareSignal(imageData, channelIndex, width, height) {
+    let channel = extractChannel(imageData, channelIndex);
+    const backgroundRadius = Math.max(8, Math.round(Math.min(width, height) * CALIBRATION.backgroundRadiusFraction));
+    let background = boxBlurChannel(channel, width, height, backgroundRadius);
+    const corrected = new Float32Array(channel.length);
+    for (let i = 0; i < channel.length; i++) {
+      corrected[i] = Math.max(0, channel[i] - background[i]);
+    }
+    channel = null;
+    background = null;
+    const smooth = blurChannel(corrected, width, height);
+    return smooth;
+  }
 
-    for (let y = r + 1; y < height - r - 1; y += 2) {
-      for (let x = r + 1; x < width - r - 1; x += 2) {
-        if (x > cutoffX && y > cutoffY) continue;
+  function otsuThreshold(channel) {
+    const histogram = new Uint32Array(256);
+    for (let i = 0; i < channel.length; i++) {
+      const bin = Math.max(0, Math.min(255, Math.floor(channel[i])));
+      histogram[bin]++;
+    }
 
-        const idx = y * width + x;
-        const val = channel[idx];
-        if (val < 18) continue;
+    let totalIntensity = 0;
+    for (let i = 0; i < 256; i++) totalIntensity += i * histogram[i];
 
-        let isMax = true;
-        let surroundSum = 0;
-        let count = 0;
+    let backgroundWeight = 0;
+    let backgroundIntensity = 0;
+    let bestVariance = -1;
+    let threshold = 0;
+    const total = channel.length;
 
-        for (let dy = -r; dy <= r; dy++) {
-          for (let dx = -r; dx <= r; dx++) {
+    for (let i = 0; i < 256; i++) {
+      backgroundWeight += histogram[i];
+      if (backgroundWeight === 0) continue;
+      const foregroundWeight = total - backgroundWeight;
+      if (foregroundWeight === 0) break;
+      backgroundIntensity += i * histogram[i];
+      const backgroundMean = backgroundIntensity / backgroundWeight;
+      const foregroundMean = (totalIntensity - backgroundIntensity) / foregroundWeight;
+      const difference = backgroundMean - foregroundMean;
+      const variance = backgroundWeight * foregroundWeight * difference * difference;
+      if (variance > bestVariance) {
+        bestVariance = variance;
+        threshold = i;
+      }
+    }
+    return threshold;
+  }
+
+  function getSensitivity() {
+    return Number(getElement('sensitivity').value);
+  }
+
+  function findPeaksAdaptive(channel, width, height, radius, sensitivity = getSensitivity()) {
+    const threshold = Math.max(CALIBRATION.minimumSignal, otsuThreshold(channel) * sensitivity);
+    const candidates = [];
+
+    for (let y = 1; y < height - 1; y += 2) {
+      for (let x = 1; x < width - 1; x += 2) {
+        const index = y * width + x;
+        const value = channel[index];
+        if (value < threshold) continue;
+
+        let isLocalMaximum = true;
+        for (let dy = -1; dy <= 1 && isLocalMaximum; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
             if (dx === 0 && dy === 0) continue;
-            const neighborVal = channel[(y + dy) * width + (x + dx)];
-            if (neighborVal > val) {
-              isMax = false;
+            const neighbor = channel[(y + dy) * width + x + dx];
+            const earlier = dy < 0 || (dy === 0 && dx < 0);
+            if (neighbor > value || (earlier && neighbor === value)) {
+              isLocalMaximum = false;
               break;
             }
-            if (Math.abs(dx) === r || Math.abs(dy) === r) {
-              surroundSum += neighborVal;
-              count++;
-            }
           }
-          if (!isMax) break;
         }
 
-        if (isMax && count > 0) {
-          const localBg = surroundSum / count;
-          if (val >= localBg * CALIBRATION.contrastRatio) {
-            peaks.push({ x, y, isPos: false });
+        if (isLocalMaximum) candidates.push({ x, y, value, isPos: false });
+      }
+    }
+
+    candidates.sort((a, b) => b.value - a.value);
+    const cellSize = radius;
+    const accepted = [];
+    const buckets = new Map();
+    const minDistanceSquared = radius * radius;
+
+    for (const candidate of candidates) {
+      const cellX = Math.floor(candidate.x / cellSize);
+      const cellY = Math.floor(candidate.y / cellSize);
+      let tooClose = false;
+
+      for (let gy = cellY - 1; gy <= cellY + 1 && !tooClose; gy++) {
+        for (let gx = cellX - 1; gx <= cellX + 1 && !tooClose; gx++) {
+          const nearby = buckets.get(gx + ':' + gy) || [];
+          for (const point of nearby) {
+            const dx = candidate.x - point.x;
+            const dy = candidate.y - point.y;
+            if (dx * dx + dy * dy < minDistanceSquared) {
+              tooClose = true;
+              break;
+            }
           }
         }
       }
+
+      if (!tooClose) {
+        accepted.push(candidate);
+        const key = cellX + ':' + cellY;
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(candidate);
+      }
     }
-    return peaks;
+
+    accepted.threshold = threshold;
+    return accepted;
   }
 
   let lastResult = null;
@@ -617,7 +766,7 @@
     let bluePeaks = [];
     if (hasBlue && state.blue) {
       bd = imgToCanvasData(state.blue);
-      const bCh = blurChannel(extractChannel(bd.data, 2), bd.width, bd.height);
+      const bCh = prepareSignal(bd.data, 2, bd.width, bd.height);
       bluePeaks = findPeaksAdaptive(bCh, bd.width, bd.height, CALIBRATION.bluePeakRadius);
       totalBlue = bluePeaks.length;
     }
@@ -626,7 +775,7 @@
     let greenPeaks = [];
     if (hasGreen && state.green) {
       gd = imgToCanvasData(state.green);
-      const gCh = blurChannel(extractChannel(gd.data, 1), gd.width, gd.height);
+      const gCh = prepareSignal(gd.data, 1, gd.width, gd.height);
       greenPeaks = findPeaksAdaptive(gCh, gd.width, gd.height, CALIBRATION.greenPeakRadius);
       totalGreen = greenPeaks.length;
     }
@@ -637,8 +786,8 @@
       md = imgToCanvasData(state.merge);
       const mW = md.width;
       const mH = md.height;
-      const mbCh = blurChannel(extractChannel(md.data, 2), mW, mH);
-      const mgCh = blurChannel(extractChannel(md.data, 1), mW, mH);
+      const mbCh = prepareSignal(md.data, 2, mW, mH);
+      const mgCh = prepareSignal(md.data, 1, mW, mH);
 
       const mBluePeaks = findPeaksAdaptive(mbCh, mW, mH, CALIBRATION.bluePeakRadius);
       const mGreenPeaks = findPeaksAdaptive(mgCh, mW, mH, CALIBRATION.greenPeakRadius);
@@ -654,7 +803,7 @@
             const ny = p.y + dy;
             const nx = p.x + dx;
             if (ny >= 0 && ny < mH && nx >= 0 && nx < mW) {
-              if (mgCh[ny * mW + nx] > 28) signalG++;
+              if (mgCh[ny * mW + nx] > mGreenPeaks.threshold) signalG++;
             }
           }
         }
@@ -690,15 +839,15 @@
 
     let summary = '';
     if (hasBlue && hasGreen && !hasMerge) {
-      summary = `Na imagem dos azuis: <b>${totalBlue}</b> célula(s). Na imagem do verde: <b>${totalGreen}</b> região(ões). Envie também a imagem de merge para calcular a colocalização entre elas.`;
+      summary = `Estimativa: <b>${totalBlue}</b> núcleos no canal azul e <b>${totalGreen}</b> sinais no verde. Para estimar colocalização, use imagens do mesmo campo e um Merge alinhado.`;
     } else if (hasBlue && !hasGreen && !hasMerge) {
-      summary = `Na imagem dos azuis: <b>${totalBlue}</b> célula(s) detectada(s).`;
+      summary = `Estimativa de <b>${totalBlue}</b> núcleo(s) no canal azul.`;
     } else if (hasGreen && !hasBlue && !hasMerge) {
-      summary = `Na imagem do verde: <b>${totalGreen}</b> região(ões) detectada(s).`;
+      summary = `Estimativa de <b>${totalGreen}</b> sinal(is) no canal verde. Isso não equivale necessariamente a contar células.`;
     } else if (hasMerge && !hasBlue && !hasGreen) {
-      summary = `A partir do merge: <b>${totalBlue}</b> célula(s) no canal azul e <b>${totalGreen}</b> região(ões) no canal verde. Destas, <b>${doublePositive}</b> são duplo-positivas (${percent !== null ? percent.toFixed(1) : 0}% de colocalização).`;
+      summary = `Pelo Merge: estimativa de <b>${totalBlue}</b> núcleos azuis e <b>${totalGreen}</b> sinais verdes; <b>${doublePositive}</b> núcleos foram estimados como duplo-positivos (${percent !== null ? percent.toFixed(1) : 0}%).`;
     } else if (hasMerge) {
-      summary = `Na imagem dos azuis: <b>${totalBlue}</b> célula(s). Na imagem do verde: <b>${totalGreen}</b> região(ões). Pelo merge, <b>${doublePositive}</b> são duplo-positivas (${percent !== null ? percent.toFixed(1) : 0}% de colocalização).`;
+      summary = `Estimativa: <b>${totalBlue}</b> núcleos azuis e <b>${totalGreen}</b> sinais verdes. Pelo Merge, <b>${doublePositive}</b> núcleos foram estimados como duplo-positivos (${percent !== null ? percent.toFixed(1) : 0}%).`;
     }
     getElement('summaryText').innerHTML = summary;
 
@@ -708,15 +857,15 @@
 
     if (hasBlue && bd) {
       countOutputs++;
-      addOverlayBlock(container, countOutputs, `Canal Azul — ${totalBlue} célula(s) detectada(s)`, bd.data, bluePeaks, bd.width, bd.height, 4, 'blue');
+      addOverlayBlock(container, countOutputs, `Canal Azul — ${totalBlue} núcleo(s) estimado(s)`, bd.data, bluePeaks, bd.width, bd.height, 4, 'blue');
     }
     if (hasGreen && gd) {
       countOutputs++;
-      addOverlayBlock(container, countOutputs, `Canal Verde — ${totalGreen} região(ões) detectada(s)`, gd.data, greenPeaks, gd.width, gd.height, 5, 'green');
+      addOverlayBlock(container, countOutputs, `Canal Verde — ${totalGreen} sinal(is) estimado(s)`, gd.data, greenPeaks, gd.width, gd.height, 5, 'green');
     }
     if (hasMerge && md) {
       countOutputs++;
-      addOverlayBlock(container, countOutputs, `Merge — ${doublePositive} duplo-positiva(s) de ${totalBlue} (${percent !== null ? percent.toFixed(1) : 0}% colocalização)`, md.data, mergeDetections, md.width, md.height, 5, 'merge');
+      addOverlayBlock(container, countOutputs, `Merge — ${doublePositive} duplo-positiva(s) estimada(s) de ${totalBlue} (${percent !== null ? percent.toFixed(1) : 0}%)`, md.data, mergeDetections, md.width, md.height, 5, 'merge');
     }
 
     getElement('resultsStep').style.display = 'block';
@@ -798,13 +947,23 @@
     setTimeout(() => {
       try {
         runAnalysis();
-        statusElem.textContent = 'Análise concluída.';
+        statusElem.textContent = 'Estimativa concluída. Confira os círculos e ajuste a sensibilidade se necessário.';
       } catch (err) {
         statusElem.textContent = 'Erro: ' + err.message;
         statusElem.className = 'status err';
       }
     }, 20);
   });
+
+  function updateSensitivityLabel() {
+    const value = getSensitivity();
+    getElement('sensitivityValue').textContent = value < 0.65
+      ? 'Mais sensível'
+      : value > 1.1 ? 'Menos sensível' : 'Equilibrada';
+  }
+
+  getElement('sensitivity').addEventListener('input', updateSensitivityLabel);
+  updateSensitivityLabel();
 
   getElement('btnAddRow').addEventListener('click', () => {
     if (!lastResult) return;
@@ -825,7 +984,7 @@
   });
 
   getElement('btnExport').addEventListener('click', () => {
-    const rows = [['Campo', 'Celulas_azul', 'Regioes_verde', 'Duplo_positivas', 'Percentual_colocalizacao', 'Razao_Azul_Verde']];
+    const rows = [['Campo', 'Nucleos_azuis_estimados', 'Sinais_verdes_estimados', 'Duplo_positivas_estimadas', 'Percentual_colocalizacao_estimado', 'Razao_intensidade_estimada']];
     document.querySelectorAll('#resultsTable tbody tr').forEach(tr => {
       const rowData = Array.from(tr.children).map(td => td.textContent || '');
       rows.push(rowData);
